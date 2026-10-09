@@ -1,0 +1,25 @@
+# macOS / Docker Desktop: USB serial devices live on macOS, not in Docker's VM.
+# Start scripts/mac_serial_bridge.py on the Mac. It makes an outbound connection
+# to localhost:GNSS_BRIDGE_PORT published by this container.
+services:
+  base:
+    build: .
+    environment:
+      GNSS_DEVICE: "listen://0.0.0.0:${GNSS_BRIDGE_PORT:-45321}"
+      GNSS_BRIDGE_WAIT_S: "${GNSS_BRIDGE_WAIT_S:-30}"
+      # Baud rate is set on the macOS side by the bridge, not by TCP.
+      GNSS_BAUD: "${GNSS_BAUD:-38400}"
+      TCP_PORT: "2102"
+      STATUS_PORT: "8080"
+      NTRIP_HOST: "${NTRIP_HOST:-}"
+      NTRIP_PORT: "${NTRIP_PORT:-2101}"
+      NTRIP_MOUNT: "${NTRIP_MOUNT:-}"
+      NTRIP_PASSWORD: "${NTRIP_PASSWORD:-}"
+      NTRIP_TLS: "${NTRIP_TLS:-false}"
+    ports:
+      # SECURITY: the serial bridge is reachable from this Mac only, not its LAN.
+      - "127.0.0.1:${GNSS_BRIDGE_PORT:-45321}:${GNSS_BRIDGE_PORT:-45321}"
+      - "${TCP_BIND_IP:-127.0.0.1}:2102:2102"
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    stop_grace_period: 10s

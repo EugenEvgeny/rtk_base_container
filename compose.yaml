@@ -1,0 +1,27 @@
+services:
+  base:
+    build: .
+    # Choose a /dev/serial/by-id/... path on your Linux host.
+    # Compose maps that stable host device to /dev/gnss in the container.
+    devices:
+      - "${GNSS_HOST_DEVICE:?set GNSS_HOST_DEVICE in .env}:/dev/gnss"
+    # Serial-device mode may not be 0666. Pass dialout's numeric host GID.
+    group_add:
+      - "${GNSS_DEVICE_GID:?set GNSS_DEVICE_GID in .env}"
+    environment:
+      GNSS_DEVICE: /dev/gnss
+      GNSS_BAUD: "${GNSS_BAUD:-38400}"
+      TCP_PORT: "2102"
+      STATUS_PORT: "8080"
+      NTRIP_HOST: "${NTRIP_HOST:-}"
+      NTRIP_PORT: "${NTRIP_PORT:-2101}"
+      NTRIP_MOUNT: "${NTRIP_MOUNT:-}"
+      NTRIP_PASSWORD: "${NTRIP_PASSWORD:-}"
+      NTRIP_TLS: "${NTRIP_TLS:-false}"
+    ports:
+      # Safe default: only host-local clients can read RTCM and status.
+      # For LAN rovers, change 127.0.0.1 to host's LAN IP deliberately.
+      - "${TCP_BIND_IP:-127.0.0.1}:2102:2102"
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    stop_grace_period: 10s
