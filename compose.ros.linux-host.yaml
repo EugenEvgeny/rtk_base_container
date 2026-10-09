@@ -1,0 +1,9 @@
+# OPTIONAL Linux-only override. Gives host ROS 2 nodes direct DDS discovery.
+# Combine AFTER compose.yaml and compose.ros.yaml; NOT recommended on macOS.
+# The GNSS base keeps its own network and publishes its read-only local ports.
+services:
+  ros2_bridge:
+    network_mode: host
+    environment:
+      RTCM_HOST: 127.0.0.1
+      STATUS_URL: http://127.0.0.1:8080/status

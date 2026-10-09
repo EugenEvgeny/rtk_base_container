@@ -20,6 +20,121 @@ The project deliberately has **no receiver credentials, hard-coded coordinates o
 
 **Not a built-in NTRIP caster:** The TCP port is **raw RTCM, not NTRIP HTTP**. For NTRIP rover clients, configure `NTRIP_*` to publish to a separate NTRIP caster that you operate or have permission to use.
 
+## ROS 2 topics: RTCM corrections and base-station status (optional)
+
+An optional **ROS 2 sidecar** publishes receiver corrections using the standard
+[`rtcm_msgs/msg/Message`](https://docs.ros.org/en/rolling/p/rtcm_msgs/msg/Message.html)
+interface. It **does not open the USB port**, and it does not configure the ZED-F9P.
+The GNSS base service remains the sole owner of the receiver. The ROS process is
+independent and reconnects to the base's **read-only** TCP/HTTP endpoints.
+
+```text
+ZED-F9P USB -> base container -- TCP 2102 (RTCM3) --> ros2_bridge container
+                           `-- HTTP 8080 (status) --^         |
+                                                          ROS 2 DDS
+                                                        /rtk_base/*
+```
+
+| Topic | Type | Description |
+|---|---|---|
+| `/rtk_base/rtcm` | `rtcm_msgs/msg/Message` | **One complete CRC-checked RTCM3 frame** per message, including preamble, length and CRC. `header.stamp` is the bridge reception time, not GNSS observation time; `header.frame_id` defaults to `rtk_base`. |
+| `/rtk_base/rtcm_type` | `std_msgs/msg/UInt16` | RTCM type (e.g. 1005, 1074) for each correction frame. |
+| `/rtk_base/status` | `std_msgs/msg/String` | JSON received from `/status` about every 2 seconds. |
+| `/rtk_base/ready` | `std_msgs/msg/Bool` | `true` while the base reports recent RTCM 1005 corrections; `false` on errors. Does **not** attest centimeter-level absolute coordinate accuracy. |
+
+### Linux: run ROS 2 inside the same Docker Compose project
+
+First complete the regular Linux receiver setup (`survey` or `fixed`) and start
+using your existing `.env`. Run from the project directory:
+
+```bash
+# Default ROS 2 distribution is Jazzy. If needed, set ROS_DISTRO=humble
+# in .env before building, so the publisher matches your ROS installation.
+docker compose -f compose.yaml -f compose.ros.yaml up -d --build base ros2_bridge
+
+# Inspect ROS 2 topics inside the running bridge container (no host ROS needed).
+docker compose -f compose.yaml -f compose.ros.yaml exec ros2_bridge \
+  bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && ros2 topic list'
+
+docker compose -f compose.yaml -f compose.ros.yaml exec ros2_bridge \
+  bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && ros2 topic echo /rtk_base/status std_msgs/msg/String'
+
+docker compose -f compose.yaml -f compose.ros.yaml exec ros2_bridge \
+  bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && ros2 topic hz /rtk_base/rtcm'
+```
+
+If the station is **not ready** (including `CFG-TMODE-MODE=0`, unfinished survey,
+no GNSS fix, or no RTCM stream), the status and ready topics still publish, but
+**RTCM topics have no frames**. This is expected; check `curl localhost:8080/status`
+and the GNSS configuration before investigating ROS 2.
+
+### Linux: expose ROS 2 topics to ROS 2 nodes running directly on the host
+
+If you run ROS 2 **natively on Linux** (RViz, another robot node, etc.), use the
+additional Linux-only host-network overlay for ROS 2 discovery. Keep the base
+container unchanged:
+
+```bash
+# Optional: set ROS_DOMAIN_ID to match the host (default 0) in .env.
+docker compose -f compose.yaml -f compose.ros.yaml \
+  -f compose.ros.linux-host.yaml up -d --build base ros2_bridge
+
+# In a separate Linux host terminal (using the same ROS distro and domain):
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=0
+ros2 topic list
+ros2 topic echo /rtk_base/ready std_msgs/msg/Bool
+ros2 topic hz /rtk_base/rtcm
+```
+
+Change `jazzy` in the command if the host uses `humble` or another compatible
+ROS version, and build the sidecar with the same `ROS_DISTRO`. DDS/RMW discovery
+across container or machine boundaries can require additional networking setup.
+
+### macOS / Docker Desktop: ROS 2 within Docker
+
+Start the existing **macOS serial bridge on the Mac** as described below,
+then in another Terminal run:
+
+```bash
+# Do not use compose.yaml on macOS.
+docker compose -f compose.mac.yaml -f compose.ros.yaml \
+  up -d --build base ros2_bridge
+
+docker compose -f compose.mac.yaml -f compose.ros.yaml exec ros2_bridge \
+  bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && ros2 topic list'
+
+docker compose -f compose.mac.yaml -f compose.ros.yaml exec ros2_bridge \
+  bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && ros2 topic echo /rtk_base/status'
+```
+
+The ROS 2 image works on Intel and Apple Silicon Macs using Docker's native
+architecture support. ROS 2 nodes **inside containers on the same Compose
+network** can discover these topics. Native macOS ROS 2 clients, or ROS 2 nodes
+in unrelated Docker networks, might **not** discover them automatically because
+of Docker Desktop's virtualized network and DDS multicast. A ROS 2 discovery
+server or dedicated DDS bridge is needed for those cases; `compose.ros.linux-host.yaml`
+is intended for **Linux**, not macOS.
+
+### Notes for ROS integrations
+
+- This is an **RTK base**: it emits **RTCM reference and observation messages**, not
+  a moving receiver's `sensor_msgs/msg/NavSatFix` position. Subscribe to
+  `/rtk_base/rtcm` in your rover's correction consumer; get `NavSatFix` from the
+  **rover** receiver/driver after it applies corrections.
+- For a ROS 2 rover driver, use `rtcm_msgs/msg/Message` (the `message` field is
+  `uint8[]`), rather than converting RTCM bytes to UTF-8 or a String.
+- The bridge reads `base:2102` and `base:8080` **inside the Compose network**;
+  Linux host-network mode instead connects to the base's existing
+  `127.0.0.1`-published ports. Do not set `TCP_BIND_IP=0.0.0.0` just for ROS.
+- `ROS_DOMAIN_ID` and the middleware/discovery configuration must match your
+  other ROS 2 processes. To see the bridge log use
+  `docker compose -f compose.yaml -f compose.ros.yaml logs -f ros2_bridge`
+  (substitute `compose.mac.yaml` on a Mac).
+- Default image: `ros:jazzy-ros-base` with apt package `ros-jazzy-rtcm-msgs`.
+  Override by setting `ROS_DISTRO=humble` and rebuilding **before** launching
+  the service if you need the Humble distribution.
+
 ## macOS / Docker Desktop setup (Intel and Apple silicon)
 
 Docker Desktop cannot directly map a macOS `/dev/cu.*` USB serial device to a Linux container with Compose's `devices:` directive. **Do not use `compose.yaml` on macOS.** Instead, this project supplies a `compose.mac.yaml` and a small Python program that runs **on the Mac**:

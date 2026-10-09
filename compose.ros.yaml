@@ -1,0 +1,20 @@
+# Optional ROS 2 publisher: combine with compose.yaml (Linux) or
+# compose.mac.yaml (macOS) using multiple `-f` arguments.
+# No direct GNSS USB access is needed; reads the existing base service.
+services:
+  ros2_bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.ros2
+      args:
+        ROS_DISTRO: "${ROS_DISTRO:-jazzy}"
+    depends_on:
+      - base
+    environment:
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+      RTCM_HOST: base
+      RTCM_PORT: "2102"
+      STATUS_URL: http://base:8080/status
+      RTCM_FRAME_ID: "${RTCM_FRAME_ID:-rtk_base}"
+      STATUS_POLL_S: "${STATUS_POLL_S:-2.0}"
+    restart: unless-stopped
